@@ -57,11 +57,12 @@ namespace pcl
     struct Transformer
     {
       const Eigen::Matrix<Scalar, 4, 4>& tf;
+      const Eigen::Matrix<Scalar, 3, 3> R;
 
       /** Construct a transformer object.
         * The transform matrix is captured by const reference. Make sure that it does not go out of scope before this
         * object does. */
-      Transformer (const Eigen::Matrix<Scalar, 4, 4>& transform) : tf (transform) { };
+      Transformer (const Eigen::Matrix<Scalar, 4, 4>& transform) : tf (transform), R (tf.rotation()) { };
 
       /** Apply SO3 transform (top-left corner of the transform matrix).
         * \param[in] src input 3D point (pointer to 3 floats)
@@ -69,9 +70,9 @@ namespace pcl
       void so3 (const float* src, float* tgt) const
       {
         const Scalar p[3] = { src[0], src[1], src[2] };  // need this when src == tgt
-        tgt[0] = static_cast<float> (tf (0, 0) * p[0] + tf (0, 1) * p[1] + tf (0, 2) * p[2]);
-        tgt[1] = static_cast<float> (tf (1, 0) * p[0] + tf (1, 1) * p[1] + tf (1, 2) * p[2]);
-        tgt[2] = static_cast<float> (tf (2, 0) * p[0] + tf (2, 1) * p[1] + tf (2, 2) * p[2]);
+        tgt[0] = static_cast<float> (R (0, 0) * p[0] + R (0, 1) * p[1] + R (0, 2) * p[2]);
+        tgt[1] = static_cast<float> (R (1, 0) * p[0] + R (1, 1) * p[1] + R (1, 2) * p[2]);
+        tgt[2] = static_cast<float> (R (2, 0) * p[0] + R (2, 1) * p[1] + R (2, 2) * p[2]);
         tgt[3] = 0;
       }
 
@@ -96,18 +97,22 @@ namespace pcl
     {
       /// Columns of the transform matrix stored in XMM registers.
       __m128 c[4];
+      __m128 cR[3];
 
       Transformer(const Eigen::Matrix4f& tf)
       {
+        const Eigen::Matrix3f R = tf.rotation();
         for (std::size_t i = 0; i < 4; ++i)
           c[i] = _mm_load_ps (tf.col (i).data ());
+        for (std::size_t i = 0; i < 3; ++i)
+          cR[i] = _mm_load_ps (R.col (i).data ());
       }
 
       void so3 (const float* src, float* tgt) const
       {
-        __m128 p0 = _mm_mul_ps (_mm_load_ps1 (&src[0]), c[0]);
-        __m128 p1 = _mm_mul_ps (_mm_load_ps1 (&src[1]), c[1]);
-        __m128 p2 = _mm_mul_ps (_mm_load_ps1 (&src[2]), c[2]);
+        __m128 p0 = _mm_mul_ps (_mm_load_ps1 (&src[0]), cR[0]);
+        __m128 p1 = _mm_mul_ps (_mm_load_ps1 (&src[1]), cR[1]);
+        __m128 p2 = _mm_mul_ps (_mm_load_ps1 (&src[2]), cR[2]);
         _mm_store_ps (tgt, _mm_add_ps(p0, _mm_add_ps(p1, p2)));
       }
 
@@ -128,27 +133,34 @@ namespace pcl
     {
       /// Columns of the transform matrix stored in XMM registers.
       __m128d c[4][2];
+      __m128d cR[3][2];
 
       Transformer(const Eigen::Matrix4d& tf)
       {
+        const Eigen::Matrix3d R = tf.rotation();
         for (std::size_t i = 0; i < 4; ++i)
         {
           c[i][0] = _mm_load_pd (tf.col (i).data () + 0);
           c[i][1] = _mm_load_pd (tf.col (i).data () + 2);
+        }
+        for (std::size_t i = 0; i < 3; ++i)
+        {
+          cR[i][0] = _mm_load_pd (R.col (i).data () + 0);
+          cR[i][1] = _mm_load_pd (R.col (i).data () + 2);
         }
       }
 
       void so3 (const float* src, float* tgt) const
       {
         __m128d xx = _mm_cvtps_pd (_mm_load_ps1 (&src[0]));
-        __m128d p0 = _mm_mul_pd (xx, c[0][0]);
-        __m128d p1 = _mm_mul_pd (xx, c[0][1]);
+        __m128d p0 = _mm_mul_pd (xx, cR[0][0]);
+        __m128d p1 = _mm_mul_pd (xx, cR[0][1]);
 
         for (std::size_t i = 1; i < 3; ++i)
         {
           __m128d vv = _mm_cvtps_pd (_mm_load_ps1 (&src[i]));
-          p0 = _mm_add_pd (_mm_mul_pd (vv, c[i][0]), p0);
-          p1 = _mm_add_pd (_mm_mul_pd (vv, c[i][1]), p1);
+          p0 = _mm_add_pd (_mm_mul_pd (vv, cR[i][0]), p0);
+          p1 = _mm_add_pd (_mm_mul_pd (vv, cR[i][1]), p1);
         }
 
         _mm_store_ps (tgt, _mm_movelh_ps (_mm_cvtpd_ps (p0), _mm_cvtpd_ps (p1)));
@@ -178,18 +190,22 @@ namespace pcl
   struct Transformer<double>
   {
     __m256d c[4];
+    __m256d cR[3];
 
     Transformer(const Eigen::Matrix4d& tf)
     {
+      const Eigen::Matrix3d R = tf.rotation();
       for (std::size_t i = 0; i < 4; ++i)
         c[i] = _mm256_load_pd (tf.col (i).data ());
+      for (std::size_t i = 0; i < 3; ++i)
+        cR[i] = _mm256_load_pd (R.col (i).data ());
     }
 
     void so3 (const float* src, float* tgt) const
     {
-      __m256d p0 = _mm256_mul_pd (_mm256_cvtps_pd (_mm_load_ps1 (&src[0])), c[0]);
-      __m256d p1 = _mm256_mul_pd (_mm256_cvtps_pd (_mm_load_ps1 (&src[1])), c[1]);
-      __m256d p2 = _mm256_mul_pd (_mm256_cvtps_pd (_mm_load_ps1 (&src[2])), c[2]);
+      __m256d p0 = _mm256_mul_pd (_mm256_cvtps_pd (_mm_load_ps1 (&src[0])), cR[0]);
+      __m256d p1 = _mm256_mul_pd (_mm256_cvtps_pd (_mm_load_ps1 (&src[1])), cR[1]);
+      __m256d p2 = _mm256_mul_pd (_mm256_cvtps_pd (_mm_load_ps1 (&src[2])), cR[2]);
       _mm_store_ps (tgt, _mm256_cvtpd_ps (_mm256_add_pd(p0, _mm256_add_pd(p1, p2))));
     }
 
